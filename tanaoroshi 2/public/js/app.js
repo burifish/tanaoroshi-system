@@ -96,6 +96,34 @@ function layout(title, bodyHtml, showBack = false, subtitle = '') {
   `;
 }
 
+// ---- 棚卸し開始時の「年月」プルダウン ----
+// タイトルを自由入力ではなく年・月の2つのプルダウンから選ぶ方式にする
+function yearMonthPickerHtml(idPrefix) {
+  const now = new Date();
+  const curY = now.getFullYear();
+  const curM = now.getMonth() + 1;
+  const years = [];
+  for (let y = curY - 1; y <= curY + 2; y++) years.push(y);
+  const months = [];
+  for (let m = 1; m <= 12; m++) months.push(m);
+  return `
+    <div class="field"><label>棚卸しの年月</label></div>
+    <div class="row2">
+      <div class="field">
+        <select id="${idPrefix}Year">${years.map(y => `<option value="${y}" ${y === curY ? 'selected' : ''}>${y}年</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <select id="${idPrefix}Month">${months.map(m => `<option value="${m}" ${m === curM ? 'selected' : ''}>${m}月</option>`).join('')}</select>
+      </div>
+    </div>
+  `;
+}
+function yearMonthTitle(idPrefix) {
+  const y = document.getElementById(`${idPrefix}Year`).value;
+  const m = document.getElementById(`${idPrefix}Month`).value;
+  return `${y}年${m}月棚卸`;
+}
+
 async function sessionBannerHtml() {
   let s = null;
   try { s = await api('/sessions/current'); } catch (e) { /* ignore */ }
@@ -144,13 +172,13 @@ async function screenScan() {
     APP.innerHTML = layout('バーコード読取', `
       <div class="warn-box">棚卸しが開始されていません。まず棚卸しを開始してください。</div>
       <div class="card">
-        <div class="field"><label>棚卸しタイトル（空欄可）</label><input id="newTitle" placeholder="例: 2026年8月棚卸"></div>
+        ${yearMonthPickerHtml('new')}
         <button class="btn btn-primary" id="startBtn">棚卸しを開始する</button>
       </div>
     `, true);
     document.getElementById('startBtn').onclick = async () => {
       try {
-        await api('/sessions', { method: 'POST', body: { title: document.getElementById('newTitle').value, created_by: getOperator() } });
+        await api('/sessions', { method: 'POST', body: { title: yearMonthTitle('new'), created_by: getOperator() } });
         showToast('棚卸しを開始しました');
         render();
       } catch (e) { showToast(e.message); }
@@ -584,15 +612,8 @@ async function screenMasterForm(id) {
   const content = document.querySelector('.content');
   content.innerHTML = `
     <div class="card">
-      <div class="row2">
-        <div class="field"><label>商品コード*</label><input id="f_code" value="${escapeHtml(p.product_code)}"></div>
-        <div class="field"><label>JANコード</label><input id="f_jan" value="${escapeHtml(p.jan_code || '')}"></div>
-      </div>
+      <div class="field"><label>JANコード*</label><input id="f_jan" value="${escapeHtml(p.jan_code || '')}"></div>
       <div class="field"><label>商品名*</label><input id="f_name" value="${escapeHtml(p.name)}"></div>
-      <div class="row2">
-        <div class="field"><label>規格・容量</label><input id="f_spec" value="${escapeHtml(p.spec || '')}"></div>
-        <div class="field"><label>単位</label><input id="f_unit" value="${escapeHtml(p.unit || '個')}"></div>
-      </div>
       <div class="field"><label>部門</label>
         <select id="f_dept">${depts.map(d => `<option value="${d.id}" ${d.id === p.department_id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select>
       </div>
@@ -600,10 +621,7 @@ async function screenMasterForm(id) {
         <div class="field"><label>仕入単価</label><input id="f_cost" type="number" min="0" value="${p.cost_price}"></div>
         <div class="field"><label>売価</label><input id="f_sell" type="number" min="0" value="${p.sell_price}"></div>
       </div>
-      <div class="row2">
-        <div class="field"><label>保管場所</label><input id="f_loc" value="${escapeHtml(p.location || '')}"></div>
-        <div class="field"><label>登録在庫数</label><input id="f_stock" type="number" min="0" value="${p.stock_qty}"></div>
-      </div>
+      <div class="field"><label>登録在庫数</label><input id="f_stock" type="number" min="0" value="${p.stock_qty}"></div>
       <div class="field"><label><input type="checkbox" id="f_target" ${p.is_inventory_target ? 'checked' : ''} style="width:auto;"> 棚卸対象にする</label></div>
       <div class="field"><label>備考</label><textarea id="f_note">${escapeHtml(p.note || '')}</textarea></div>
       <div id="formMsg"></div>
@@ -615,21 +633,17 @@ async function screenMasterForm(id) {
   `;
   document.getElementById('saveBtn').onclick = async () => {
     const body = {
-      product_code: document.getElementById('f_code').value.trim(),
       jan_code: document.getElementById('f_jan').value.trim(),
       name: document.getElementById('f_name').value.trim(),
-      spec: document.getElementById('f_spec').value.trim(),
-      unit: document.getElementById('f_unit').value.trim() || '個',
       department_id: Number(document.getElementById('f_dept').value),
       cost_price: Number(document.getElementById('f_cost').value) || 0,
       sell_price: Number(document.getElementById('f_sell').value) || 0,
-      location: document.getElementById('f_loc').value.trim(),
       stock_qty: Number(document.getElementById('f_stock').value) || 0,
       is_inventory_target: document.getElementById('f_target').checked,
       note: document.getElementById('f_note').value.trim(),
       operator: getOperator()
     };
-    if (!body.product_code || !body.name) { document.getElementById('formMsg').innerHTML = `<div class="error-box">商品コードと商品名は必須です</div>`; return; }
+    if (!body.jan_code || !body.name) { document.getElementById('formMsg').innerHTML = `<div class="error-box">JANコードと商品名は必須です</div>`; return; }
     try {
       if (id) await api(`/products/${id}`, { method: 'PUT', body });
       else await api('/products', { method: 'POST', body });
@@ -652,7 +666,7 @@ async function screenMasterImport() {
   const content = document.querySelector('.content');
   content.innerHTML = `
     <div class="card">
-      <div class="info-box">列: 商品コード, JANコード, 商品名, 規格, 部門, 単位, 仕入単価, 売価, 保管場所, 棚卸対象(対象/対象外), 備考, 登録在庫数<br>
+      <div class="info-box">列: JANコード, 商品名, 部門, 仕入単価, 売価, 棚卸対象(対象/対象外), 備考, 登録在庫数<br>
       <a href="/api/products/template.csv" class="link-btn">テンプレートCSVをダウンロード</a></div>
       <div class="field"><input type="file" id="fileInput" accept=".csv,.xlsx,.xls"></div>
       <button class="btn btn-primary" id="uploadBtn">取り込む</button>
@@ -714,7 +728,7 @@ async function screenSettings() {
           <button class="btn btn-outline" onclick="location.hash='#/results/${current.id}'">この棚卸しを開く</button>
         </div>
       ` : `
-        <div class="field"><label>新しい棚卸しタイトル</label><input id="newTitle" placeholder="例: 2026年9月棚卸"></div>
+        ${yearMonthPickerHtml('new')}
         <button class="btn btn-primary" id="startBtn">棚卸しを開始</button>
       `}
     </div>
@@ -733,7 +747,7 @@ async function screenSettings() {
   const startBtn = document.getElementById('startBtn');
   if (startBtn) startBtn.onclick = async () => {
     try {
-      const r = await api('/sessions', { method: 'POST', body: { title: document.getElementById('newTitle').value, created_by: getOperator() } });
+      const r = await api('/sessions', { method: 'POST', body: { title: yearMonthTitle('new'), created_by: getOperator() } });
       showToast('棚卸しを開始しました');
       location.hash = `#/results/${r.id}`;
     } catch (e) { alert(e.message); }
