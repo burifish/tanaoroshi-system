@@ -64,6 +64,18 @@ router.get('/products/lookup', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 商品マスターの取込用サンプルCSVテンプレート出力
+// 注意: "/products/:id" より前に定義すること(そうしないと "template.csv" が商品IDとして
+// 誤って解釈され、この特定パスまで到達できなくなる)
+router.get('/products/template.csv', (req, res) => {
+  const headers = ['商品コード', 'JANコード', '商品名', '規格', '部門', '単位', '仕入単価', '売価', '保管場所', '棚卸対象', '備考', '登録在庫数'];
+  const sample = ['P0100', '4900000000000', 'サンプル商品', '1個', '直売所', '個', '100', '150', '倉庫A-1', '対象', '', '10'];
+  const csv = '﻿' + [headers.join(','), sample.join(',')].join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="product_import_template.csv"');
+  res.send(csv);
+});
+
 router.get('/products/:id', async (req, res) => {
   try {
     const row = await db.get(`SELECT p.*, d.name AS department_name FROM products p
