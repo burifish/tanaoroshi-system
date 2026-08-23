@@ -68,8 +68,8 @@ router.get('/products/lookup', async (req, res) => {
 // 注意: "/products/:id" より前に定義すること(そうしないと "template.csv" が商品IDとして
 // 誤って解釈され、この特定パスまで到達できなくなる)
 router.get('/products/template.csv', (req, res) => {
-  const headers = ['商品コード', 'JANコード', '商品名', '規格', '部門', '単位', '仕入単価', '売価', '保管場所', '棚卸対象', '備考', '登録在庫数'];
-  const sample = ['P0100', '4900000000000', 'サンプル商品', '1個', '直売所', '個', '100', '150', '倉庫A-1', '対象', '', '10'];
+  const headers = ['JANコード', '商品名', '部門', '仕入単価', '売価', '棚卸対象', '備考', '登録在庫数'];
+  const sample = ['4900000000000', 'サンプル商品', '直売所', '100', '150', '対象', '', '10'];
   const csv = '﻿' + [headers.join(','), sample.join(',')].join('\r\n');
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="product_import_template.csv"');
@@ -96,10 +96,14 @@ async function upsertDepartmentByName(name) {
 }
 
 // 商品新規登録
+// 注意: 商品コードの入力欄は画面上から外しているため、商品コードが指定されなかった
+// 場合はJANコードをそのまま商品コード代わりに自動設定する(一意キーとして必要なため)
 router.post('/products', async (req, res) => {
   const b = req.body;
-  if (!b.product_code || !b.name) {
-    return res.status(400).json({ error: '商品コードと商品名は必須です' });
+  const jan = b.jan_code ? String(b.jan_code).trim() : '';
+  const product_code = (b.product_code ? String(b.product_code).trim() : '') || jan;
+  if (!product_code || !b.name) {
+    return res.status(400).json({ error: 'JANコードと商品名は必須です' });
   }
   try {
     const department_id = b.department_id || await upsertDepartmentByName(b.department_name);
@@ -108,8 +112,8 @@ router.post('/products', async (req, res) => {
       VALUES (@product_code, @jan_code, @name, @spec, @department_id, @unit, @cost_price, @sell_price, @location, @is_inventory_target, @note, @stock_qty)
       RETURNING id
     `, {
-      product_code: b.product_code,
-      jan_code: b.jan_code || null,
+      product_code,
+      jan_code: jan || null,
       name: b.name,
       spec: b.spec || '',
       department_id: department_id || null,
@@ -121,7 +125,7 @@ router.post('/products', async (req, res) => {
       note: b.note || '',
       stock_qty: Number(b.stock_qty) || 0
     });
-    logOperation(b.operator, '商品登録', b.product_code, b.name);
+    logOperation(b.operator, '商品登録', product_code, b.name);
     res.json({ id: info.lastInsertRowid });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -217,8 +221,13 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
     for (const [jp, en] of Object.entries(colMap)) {
       if (raw[jp] !== undefined) rec[en] = raw[jp];
     }
-    if (!rec.product_code || !rec.name) {
-      errors.push({ row: idx + 2, error: '商品コードまたは商品名が空です' });
+    // 商品コード列はテンプレートから外しているため、指定が無ければJANコードを
+    // そのまま商品コード代わりに使う(一意キーとして必要なため)
+    const janRaw = rec.jan_code ? String(rec.jan_code).trim() : '';
+    const codeRaw = rec.product_code ? String(rec.product_code).trim() : '';
+    const rowProductCode = codeRaw || janRaw;
+    if (!rowProductCode || !rec.name) {
+      errors.push({ row: idx + 2, error: 'JANコードまたは商品名が空です' });
       continue;
     }
     const targetFlag = String(rec.target_flag ?? '対象').trim();
@@ -246,8 +255,8 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
             is_inventory_target=excluded.is_inventory_target, note=excluded.note, stock_qty=excluded.stock_qty,
             updated_at=NOW()
         `, {
-          product_code: String(rec.product_code).trim(),
-          jan_code: rec.jan_code ? String(rec.jan_code).trim() : null,
+          product_code: rowProductCode,
+          jan_code: janRaw || null,
           name: String(rec.name).trim(),
           spec: rec.spec || '',
           department_id: department_id || null,
