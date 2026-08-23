@@ -208,18 +208,23 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
   let success = 0;
   const errors = [];
 
-  try {
-    await db.withTransaction(async (tx) => {
-      for (let idx = 0; idx < rows.length; idx++) {
-        const raw = rows[idx];
-        const rec = {};
-        for (const [jp, en] of Object.entries(colMap)) {
-          if (raw[jp] !== undefined) rec[en] = raw[jp];
-        }
-        if (!rec.product_code || !rec.name) {
-          errors.push({ row: idx + 2, error: '商品コードまたは商品名が空です' });
-          continue;
-        }
+  // 注意: 行ごとに個別のトランザクションで処理する(全体を1つの大きなトランザクションに
+  // まとめると、PostgreSQLでは1行でもエラーになった時点でトランザクション全体が
+  // "aborted" 状態になり、以降の正常な行まで巻き添えでエラーになってしまうため)
+  for (let idx = 0; idx < rows.length; idx++) {
+    const raw = rows[idx];
+    const rec = {};
+    for (const [jp, en] of Object.entries(colMap)) {
+      if (raw[jp] !== undefined) rec[en] = raw[jp];
+    }
+    if (!rec.product_code || !rec.name) {
+      errors.push({ row: idx + 2, error: '商品コードまたは商品名が空です' });
+      continue;
+    }
+    const targetFlag = String(rec.target_flag ?? '対象').trim();
+    const is_target = (targetFlag === '対象外' || targetFlag === '0' || targetFlag.toLowerCase() === 'false') ? 0 : 1;
+    try {
+      await db.withTransaction(async (tx) => {
         let department_id = null;
         const deptName = String(rec.department_name || '').trim();
         if (deptName) {
@@ -231,40 +236,34 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
             department_id = dept.id;
           }
         }
-        const targetFlag = String(rec.target_flag ?? '対象').trim();
-        const is_target = (targetFlag === '対象外' || targetFlag === '0' || targetFlag.toLowerCase() === 'false') ? 0 : 1;
-        try {
-          await tx.run(`
-            INSERT INTO products (product_code, jan_code, name, spec, department_id, unit, cost_price, sell_price, location, is_inventory_target, note, stock_qty)
-            VALUES (@product_code, @jan_code, @name, @spec, @department_id, @unit, @cost_price, @sell_price, @location, @is_inventory_target, @note, @stock_qty)
-            ON CONFLICT(product_code) DO UPDATE SET
-              jan_code=excluded.jan_code, name=excluded.name, spec=excluded.spec,
-              department_id=excluded.department_id, unit=excluded.unit, cost_price=excluded.cost_price,
-              sell_price=excluded.sell_price, location=excluded.location,
-              is_inventory_target=excluded.is_inventory_target, note=excluded.note, stock_qty=excluded.stock_qty,
-              updated_at=NOW()
-          `, {
-            product_code: String(rec.product_code).trim(),
-            jan_code: rec.jan_code ? String(rec.jan_code).trim() : null,
-            name: String(rec.name).trim(),
-            spec: rec.spec || '',
-            department_id: department_id || null,
-            unit: rec.unit || '個',
-            cost_price: Number(rec.cost_price) || 0,
-            sell_price: Number(rec.sell_price) || 0,
-            location: rec.location || '',
-            is_inventory_target: is_target,
-            note: rec.note || '',
-            stock_qty: Number(rec.stock_qty) || 0
-          });
-          success++;
-        } catch (e) {
-          errors.push({ row: idx + 2, error: e.message });
-        }
-      }
-    });
-  } catch (e) {
-    return res.status(500).json({ error: '取込処理に失敗しました: ' + e.message });
+        await tx.run(`
+          INSERT INTO products (product_code, jan_code, name, spec, department_id, unit, cost_price, sell_price, location, is_inventory_target, note, stock_qty)
+          VALUES (@product_code, @jan_code, @name, @spec, @department_id, @unit, @cost_price, @sell_price, @location, @is_inventory_target, @note, @stock_qty)
+          ON CONFLICT(product_code) DO UPDATE SET
+            jan_code=excluded.jan_code, name=excluded.name, spec=excluded.spec,
+            department_id=excluded.department_id, unit=excluded.unit, cost_price=excluded.cost_price,
+            sell_price=excluded.sell_price, location=excluded.location,
+            is_inventory_target=excluded.is_inventory_target, note=excluded.note, stock_qty=excluded.stock_qty,
+            updated_at=NOW()
+        `, {
+          product_code: String(rec.product_code).trim(),
+          jan_code: rec.jan_code ? String(rec.jan_code).trim() : null,
+          name: String(rec.name).trim(),
+          spec: rec.spec || '',
+          department_id: department_id || null,
+          unit: rec.unit || '個',
+          cost_price: Number(rec.cost_price) || 0,
+          sell_price: Number(rec.sell_price) || 0,
+          location: rec.location || '',
+          is_inventory_target: is_target,
+          note: rec.note || '',
+          stock_qty: Number(rec.stock_qty) || 0
+        });
+      });
+      success++;
+    } catch (e) {
+      errors.push({ row: idx + 2, error: e.message });
+    }
   }
 
   logOperation(req.body.operator, '商品一括登録', req.file.originalname, `成功${success}件/エラー${errors.length}件`);
