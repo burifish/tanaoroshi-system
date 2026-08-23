@@ -269,6 +269,12 @@ function renderProductCard(product, currentItem) {
         </div>
       </div>
       <div class="field"><label>単位</label><input value="${escapeHtml(product.unit)}" disabled></div>
+      <div class="field">
+        <label>原価（仕入単価）${Number(product.cost_price) > 0 ? '' : ' ※未設定です。分かる場合はここで入力できます'}</label>
+        <input id="costInput" type="number" inputmode="decimal" min="0" step="1"
+          value="${Number(product.cost_price) > 0 ? product.cost_price : ''}"
+          placeholder="不明な場合は空欄のままでOK">
+      </div>
       <div class="field"><label>棚・保管場所</label><input id="locInput" value="${escapeHtml((currentItem && currentItem.location) || product.location || '')}"></div>
       <div class="field"><label>備考</label><textarea id="noteInput">${escapeHtml((currentItem && currentItem.note) || '')}</textarea></div>
       <div id="regMsg"></div>
@@ -297,12 +303,19 @@ async function doRegister(extra) {
   if (qtyVal === '' || Number.isNaN(quantity)) { msgBox.innerHTML = `<div class="error-box">数量は数字で入力してください</div>`; return; }
   if (quantity < 0) { msgBox.innerHTML = `<div class="error-box">数量にマイナスは入力できません</div>`; return; }
 
+  const costVal = document.getElementById('costInput').value;
+  if (costVal !== '') {
+    const costNum = Number(costVal);
+    if (Number.isNaN(costNum) || costNum < 0) { msgBox.innerHTML = `<div class="error-box">原価は0以上の数字で入力してください</div>`; return; }
+  }
+
   const body = {
     jan_code: scanState.product.jan_code,
     quantity,
     location: document.getElementById('locInput').value,
     note: document.getElementById('noteInput').value,
     operator: getOperator(),
+    ...(costVal !== '' ? { cost_price: Number(costVal) } : {}),
     ...extra
   };
   try {
