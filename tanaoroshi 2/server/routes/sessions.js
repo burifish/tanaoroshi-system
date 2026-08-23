@@ -181,7 +181,7 @@ router.post('/sessions/:id/items', async (req, res) => {
     }
 
     const { jan_code, location, note, operator } = req.body;
-    let { quantity, mode, confirm_non_target, confirm_anomaly } = req.body;
+    let { quantity, mode, confirm_non_target, confirm_anomaly, cost_price } = req.body;
 
     if (!jan_code) return res.status(400).json({ error: 'バーコードが必要です' });
 
@@ -192,6 +192,16 @@ router.post('/sessions/:id/items', async (req, res) => {
     }
     if (quantity < 0) {
       return res.status(400).json({ error: 'NEGATIVE_NOT_ALLOWED', message: '数量にマイナスは入力できません' });
+    }
+
+    // ---- 原価(仕入単価)はバーコード読取画面からその場で入力・更新できる(任意項目) ----
+    let updateCostPrice = false;
+    if (cost_price !== undefined && cost_price !== null && cost_price !== '') {
+      cost_price = Number(cost_price);
+      if (Number.isNaN(cost_price) || cost_price < 0) {
+        return res.status(400).json({ error: 'INVALID_COST_PRICE', message: '原価は0以上の数字で入力してください' });
+      }
+      updateCostPrice = true;
     }
 
     const product = await db.get('SELECT * FROM products WHERE jan_code = ?', [String(jan_code).trim()]);
@@ -239,9 +249,17 @@ router.post('/sessions/:id/items', async (req, res) => {
         INSERT INTO inventory_scan_logs (session_id, item_id, product_id, jan_code, qty_entered, mode, result_qty, operator)
         VALUES (?, (SELECT id FROM inventory_items WHERE session_id=? AND product_id=?), ?, ?, ?, ?, ?, ?)
       `, [sessionId, sessionId, product.id, product.id, product.jan_code, quantity, effectiveMode, resultQty, operator || '']);
+
+      if (updateCostPrice && Number(product.cost_price) !== cost_price) {
+        await tx.run(`UPDATE products SET cost_price=?, updated_at=NOW() WHERE id=?`, [cost_price, product.id]);
+      }
     });
 
     logOperation(operator, '棚卸登録', product.name, `${effectiveMode === 'add' ? '加算' : '上書き'} ${previousQty}->${resultQty}${product.unit}`);
+    if (updateCostPrice && Number(product.cost_price) !== cost_price) {
+      logOperation(operator, '原価更新(読取画面)', product.name, `${product.cost_price}->${cost_price}`);
+      product.cost_price = cost_price;
+    }
 
     const item = await db.get('SELECT * FROM inventory_items WHERE session_id=? AND product_id=?', [sessionId, product.id]);
     res.json({ item, product, previousQty, mode: effectiveMode, duplicate: !!existing });
