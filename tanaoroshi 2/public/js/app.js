@@ -667,7 +667,9 @@ async function screenMasterImport() {
   content.innerHTML = `
     <div class="card">
       <div class="info-box">列: JANコード, 商品名, 部門, 仕入単価, 売価, 棚卸対象(対象/対象外), 備考, 登録在庫数<br>
+      <a href="/api/products/template.xlsx" class="link-btn">テンプレートExcel(.xlsx)をダウンロード</a><br>
       <a href="/api/products/template.csv" class="link-btn">テンプレートCSVをダウンロード</a></div>
+      <div class="warn-box">⚠ JANコードは13桁前後の長い数字のため、ExcelでCSVファイルを直接開いて入力すると「4.9E+12」のような表記に自動変換され、保存すると桁が失われることがあります。上のExcelテンプレートはJANコード欄があらかじめ「文字列」書式になっているため、こちらの利用をおすすめします。CSVを使う場合は、JANコードの列を先に「文字列（テキスト）」書式にしてから入力してください。</div>
       <div class="field"><input type="file" id="fileInput" accept=".csv,.xlsx,.xls"></div>
       <button class="btn btn-primary" id="uploadBtn">取り込む</button>
       <div id="importResult"></div>
