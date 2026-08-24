@@ -34,4 +34,15 @@ function looksLikeBrokenScientific(v) {
   return /^[\d.]+E[+-]?\d+$/i.test(String(v || '').trim());
 }
 
-module.exports = { excelSafeNumericText, stripExcelSafeWrapper, looksLikeBrokenScientific };
+// PostgreSQLの一意制約違反エラーを、画面にそのまま出しても分かりやすい日本語メッセージに変換する
+function friendlyDbError(e) {
+  if (e && e.code === '23505') {
+    const c = e.constraint || '';
+    if (c.includes('jan_code')) return 'このJANコードはすでに他の商品で登録されています。';
+    if (c.includes('product_code')) return 'この商品コードはすでに他の商品で使われています。';
+    return 'すでに登録されている値と重複しています。';
+  }
+  return (e && e.message) || String(e);
+}
+
+module.exports = { excelSafeNumericText, stripExcelSafeWrapper, looksLikeBrokenScientific, friendlyDbError };
