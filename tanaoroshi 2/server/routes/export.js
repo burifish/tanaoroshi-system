@@ -2,6 +2,7 @@ const express = require('express');
 const XLSX = require('xlsx');
 const db = require('../db');
 const { logOperation } = require('../logger');
+const { excelSafeNumericText } = require('../csvUtil');
 
 const router = express.Router();
 
@@ -54,12 +55,15 @@ router.get('/sessions/:id/export.csv', async (req, res) => {
     const data = await buildExportRows(req.params.id);
     if (!data) return res.status(404).json({ error: 'セッションが見つかりません' });
     const headers = ['棚卸日', '部門', '商品コード', 'JANコード', '商品名', '規格', '単位', '仕入単価', '棚卸数量', '棚卸金額', '前回数量', '増減数量', '備考'];
+    // 商品コード・JANコードはExcelで開くと指数表記(4.9E+12等)に自動変換され、
+    // 保存し直すと桁が失われるため、Excelがテキストとして認識する ="..." 形式で書き出す
+    const excelSafeCols = new Set(['商品コード', 'JANコード']);
     const escape = (v) => {
       const s = String(v ?? '');
       return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const lines = [headers.join(',')];
-    data.rows.forEach(r => lines.push(headers.map(h => escape(r[h])).join(',')));
+    data.rows.forEach(r => lines.push(headers.map(h => escape(excelSafeCols.has(h) ? excelSafeNumericText(r[h]) : r[h])).join(',')));
     const csv = '﻿' + lines.join('\r\n');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="tanaoroshi_${req.params.id}.csv"`);
