@@ -3,7 +3,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('../db');
 const { logOperation } = require('../logger');
-const { excelSafeNumericText, stripExcelSafeWrapper, looksLikeBrokenScientific } = require('../csvUtil');
+const { excelSafeNumericText, stripExcelSafeWrapper, looksLikeBrokenScientific, friendlyDbError } = require('../csvUtil');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -173,7 +173,7 @@ router.post('/products', async (req, res) => {
     logOperation(b.operator, '商品登録', product_code, b.name);
     res.json({ id: info.lastInsertRowid });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ error: friendlyDbError(e) });
   }
 });
 
@@ -214,7 +214,7 @@ router.put('/products/:id', async (req, res) => {
     logOperation(b.operator, '商品更新', existing.product_code, b.name || existing.name);
     res.json({ ok: true });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    res.status(400).json({ error: friendlyDbError(e) });
   }
 });
 
@@ -307,16 +307,7 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
             department_id = dept.id;
           }
         }
-        await tx.run(`
-          INSERT INTO products (product_code, jan_code, name, spec, department_id, unit, cost_price, sell_price, location, is_inventory_target, note, stock_qty)
-          VALUES (@product_code, @jan_code, @name, @spec, @department_id, @unit, @cost_price, @sell_price, @location, @is_inventory_target, @note, @stock_qty)
-          ON CONFLICT(product_code) DO UPDATE SET
-            jan_code=excluded.jan_code, name=excluded.name, spec=excluded.spec,
-            department_id=excluded.department_id, unit=excluded.unit, cost_price=excluded.cost_price,
-            sell_price=excluded.sell_price, location=excluded.location,
-            is_inventory_target=excluded.is_inventory_target, note=excluded.note, stock_qty=excluded.stock_qty,
-            updated_at=NOW()
-        `, {
+        const fields = {
           product_code: rowProductCode,
           jan_code: janRaw || null,
           name: String(rec.name).trim(),
@@ -329,11 +320,36 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
           is_inventory_target: is_target,
           note: rec.note || '',
           stock_qty: toNum(rec.stock_qty)
-        });
+        };
+        // 既存商品の特定はJANコードを優先する。商品コード欄は画面から外し、
+        // 内部的にはJANコードを商品コード代わりに使っているため、CSV側に
+        // 商品コードが無い行では「JANコードが一致する既存商品」を更新対象とする
+        // 必要がある。以前のように商品コード(=INSERTしようとしている値)だけを
+        // ON CONFLICTのキーにすると、既に別の商品コードで登録済みの商品と
+        // JANコードが重複した場合に、UPDATEではなく新規INSERTとして扱われてしまい、
+        // jan_codeの一意制約違反エラーになってしまう。
+        let existing = null;
+        if (janRaw) existing = await tx.get('SELECT id FROM products WHERE jan_code = ?', [janRaw]);
+        if (!existing && codeRaw) existing = await tx.get('SELECT id FROM products WHERE product_code = ?', [codeRaw]);
+
+        if (existing) {
+          await tx.run(`
+            UPDATE products SET
+              jan_code=@jan_code, name=@name, spec=@spec, department_id=@department_id, unit=@unit,
+              cost_price=@cost_price, sell_price=@sell_price, location=@location,
+              is_inventory_target=@is_inventory_target, note=@note, stock_qty=@stock_qty, updated_at=NOW()
+            WHERE id=@id
+          `, { ...fields, id: existing.id });
+        } else {
+          await tx.run(`
+            INSERT INTO products (product_code, jan_code, name, spec, department_id, unit, cost_price, sell_price, location, is_inventory_target, note, stock_qty)
+            VALUES (@product_code, @jan_code, @name, @spec, @department_id, @unit, @cost_price, @sell_price, @location, @is_inventory_target, @note, @stock_qty)
+          `, fields);
+        }
       });
       success++;
     } catch (e) {
-      errors.push({ row: idx + 2, error: e.message });
+      errors.push({ row: idx + 2, error: friendlyDbError(e) });
     }
   }
 
