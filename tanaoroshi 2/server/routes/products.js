@@ -3,9 +3,18 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('../db');
 const { logOperation } = require('../logger');
+const { excelSafeNumericText, stripExcelSafeWrapper, looksLikeBrokenScientific } = require('../csvUtil');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// CSV/Excel取込でraw:false指定により金額欄が "1,200" のようにカンマ区切りの
+// 文字列で来る場合があるため、カンマを除去してから数値変換する
+function toNum(v) {
+  if (v === '' || v == null) return 0;
+  const n = Number(String(v).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
 
 // 部門一覧
 router.get('/departments', async (req, res) => {
@@ -69,11 +78,44 @@ router.get('/products/lookup', async (req, res) => {
 // 誤って解釈され、この特定パスまで到達できなくなる)
 router.get('/products/template.csv', (req, res) => {
   const headers = ['JANコード', '商品名', '部門', '仕入単価', '売価', '棚卸対象', '備考', '登録在庫数'];
-  const sample = ['4900000000000', 'サンプル商品', '直売所', '100', '150', '対象', '', '10'];
+  // JANコードはExcelで開くと指数表記(4.9E+12等)に自動変換され、保存し直すと桁が
+  // 失われてしまうため、Excelがテキストとして認識する ="..." 形式で書き出す
+  const sample = [excelSafeNumericText('4900000000000'), 'サンプル商品', '直売所', '100', '150', '対象', '', '10'];
   const csv = '﻿' + [headers.join(','), sample.join(',')].join('\r\n');
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="product_import_template.csv"');
   res.send(csv);
+});
+
+// 商品マスターの取込用サンプルExcel(.xlsx)テンプレート出力
+// CSVと違い、Excelファイルはセルの書式(表示形式)を保存できるため、JANコード列を
+// あらかじめ「文字列」書式にしておくことで、あとからJANコードを入力・貼り付けしても
+// 指数表記(E+12等)に変換されず、桁が失われる事故を防げる。CSVよりも安全なので
+// こちらを優先的に案内する。
+router.get('/products/template.xlsx', (req, res) => {
+  const headers = ['JANコード', '商品名', '部門', '仕入単価', '売価', '棚卸対象', '備考', '登録在庫数'];
+  const sample = ['4900000000000', 'サンプル商品', '直売所', 100, 150, '対象', '', 10];
+  const ws = XLSX.utils.aoa_to_sheet([headers, sample]);
+
+  const MAX_ROWS = 2000;
+  for (let r = 2; r <= MAX_ROWS + 1; r++) {
+    const addr = 'A' + r;
+    if (!ws[addr]) {
+      ws[addr] = { t: 's', v: '', z: '@' };
+    } else {
+      ws[addr].z = '@';
+      if (ws[addr].t === 'n') { ws[addr].v = String(ws[addr].v); ws[addr].t = 's'; }
+    }
+  }
+  ws['!cols'] = [{ wch: 16 }, { wch: 24 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 12 }];
+  ws['!ref'] = `A1:H${MAX_ROWS + 1}`;
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '商品マスター');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="product_import_template.xlsx"');
+  res.send(buf);
 });
 
 router.get('/products/:id', async (req, res) => {
@@ -100,10 +142,13 @@ async function upsertDepartmentByName(name) {
 // 場合はJANコードをそのまま商品コード代わりに自動設定する(一意キーとして必要なため)
 router.post('/products', async (req, res) => {
   const b = req.body;
-  const jan = b.jan_code ? String(b.jan_code).trim() : '';
-  const product_code = (b.product_code ? String(b.product_code).trim() : '') || jan;
+  const jan = stripExcelSafeWrapper(b.jan_code ? String(b.jan_code).trim() : '');
+  const product_code = stripExcelSafeWrapper(b.product_code ? String(b.product_code).trim() : '') || jan;
   if (!product_code || !b.name) {
     return res.status(400).json({ error: 'JANコードと商品名は必須です' });
+  }
+  if (looksLikeBrokenScientific(jan) || looksLikeBrokenScientific(product_code)) {
+    return res.status(400).json({ error: 'JANコードが指数表記(例: 4.93E+11)になっており正しく読み取れません。Excelでセルの書式を「文字列」にしてから、正しいJANコードを入力し直してください。' });
   }
   try {
     const department_id = b.department_id || await upsertDepartmentByName(b.department_name);
@@ -135,9 +180,14 @@ router.post('/products', async (req, res) => {
 // 商品更新
 router.put('/products/:id', async (req, res) => {
   const b = req.body;
+  if (b.jan_code != null) b.jan_code = stripExcelSafeWrapper(String(b.jan_code).trim());
+  if (b.product_code != null) b.product_code = stripExcelSafeWrapper(String(b.product_code).trim());
   try {
     const existing = await db.get('SELECT * FROM products WHERE id=?', [req.params.id]);
     if (!existing) return res.status(404).json({ error: '商品が見つかりません' });
+    if (looksLikeBrokenScientific(b.jan_code) || looksLikeBrokenScientific(b.product_code)) {
+      return res.status(400).json({ error: 'JANコードが指数表記(例: 4.93E+11)になっており正しく読み取れません。Excelでセルの書式を「文字列」にしてから、正しいJANコードを入力し直してください。' });
+    }
     const department_id = b.department_id || (b.department_name ? await upsertDepartmentByName(b.department_name) : null) || existing.department_id;
     await db.run(`
       UPDATE products SET
@@ -197,7 +247,13 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
       wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     }
     const sheet = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    // raw:false を指定し、セルの「表示上の文字列」を取得する。
+    // これを指定しないと、JANコードのような長い数字がSheetJS内部で自動的に
+    // 数値型に変換され、例えば "4.52E+12"(=Excelで桁が失われた壊れた指数表記)が
+    // 4520000000000 のような一見正常な数字に化けてしまい、壊れたデータを
+    // 正しいデータとして誤って取り込んでしまう(下のlooksLikeBrokenScientificで
+    // 検知できなくなる)。raw:falseなら "4.52E+12" という文字列のまま受け取れる。
+    rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
   } catch (e) {
     return res.status(400).json({ error: 'ファイルの読み込みに失敗しました: ' + e.message });
   }
@@ -222,12 +278,18 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
       if (raw[jp] !== undefined) rec[en] = raw[jp];
     }
     // 商品コード列はテンプレートから外しているため、指定が無ければJANコードを
-    // そのまま商品コード代わりに使う(一意キーとして必要なため)
-    const janRaw = rec.jan_code ? String(rec.jan_code).trim() : '';
-    const codeRaw = rec.product_code ? String(rec.product_code).trim() : '';
+    // そのまま商品コード代わりに使う(一意キーとして必要なため)。
+    // また、Excelで開いた際に指数表記(="..." または 4.93E+11 のようなE表記)に
+    // なっているケースに対応するため、包み記法を取り除く/異常値を検知する。
+    const janRaw = stripExcelSafeWrapper(rec.jan_code ? String(rec.jan_code).trim() : '');
+    const codeRaw = stripExcelSafeWrapper(rec.product_code ? String(rec.product_code).trim() : '');
     const rowProductCode = codeRaw || janRaw;
     if (!rowProductCode || !rec.name) {
       errors.push({ row: idx + 2, error: 'JANコードまたは商品名が空です' });
+      continue;
+    }
+    if (looksLikeBrokenScientific(janRaw) || looksLikeBrokenScientific(codeRaw)) {
+      errors.push({ row: idx + 2, error: 'JANコードが指数表記(例: 4.93E+11)になっており正しく読み取れません。Excelでセルの書式を「文字列」に変更してから、正しいJANコードを入力し直してください。' });
       continue;
     }
     const targetFlag = String(rec.target_flag ?? '対象').trim();
@@ -261,12 +323,12 @@ router.post('/products/import', upload.single('file'), async (req, res) => {
           spec: rec.spec || '',
           department_id: department_id || null,
           unit: rec.unit || '個',
-          cost_price: Number(rec.cost_price) || 0,
-          sell_price: Number(rec.sell_price) || 0,
+          cost_price: toNum(rec.cost_price),
+          sell_price: toNum(rec.sell_price),
           location: rec.location || '',
           is_inventory_target: is_target,
           note: rec.note || '',
-          stock_qty: Number(rec.stock_qty) || 0
+          stock_qty: toNum(rec.stock_qty)
         });
       });
       success++;
