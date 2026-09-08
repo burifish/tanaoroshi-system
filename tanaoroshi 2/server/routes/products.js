@@ -24,6 +24,52 @@ router.get('/departments', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 部門を新規登録
+router.post('/departments', async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: '部門名を入力してください' });
+    const existing = await db.get('SELECT id FROM departments WHERE name = ?', [name]);
+    if (existing) return res.status(400).json({ error: 'この部門名は既に登録されています' });
+    const maxRow = await db.get('SELECT COALESCE(MAX(sort_order), -1) AS m FROM departments');
+    const sort_order = req.body.sort_order != null ? Number(req.body.sort_order) : Number(maxRow.m) + 1;
+    const info = await db.run('INSERT INTO departments (name, sort_order) VALUES (?, ?)', [name, sort_order]);
+    logOperation(req.body.operator, '部門登録', name, '');
+    res.json({ id: info.lastInsertRowid, name, sort_order });
+  } catch (e) { res.status(400).json({ error: friendlyDbError(e) }); }
+});
+
+// 部門名・並び順の変更
+router.put('/departments/:id', async (req, res) => {
+  try {
+    const existing = await db.get('SELECT * FROM departments WHERE id=?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: '部門が見つかりません' });
+    const name = req.body.name != null ? String(req.body.name).trim() : existing.name;
+    if (!name) return res.status(400).json({ error: '部門名を入力してください' });
+    const dup = await db.get('SELECT id FROM departments WHERE name=? AND id<>?', [name, req.params.id]);
+    if (dup) return res.status(400).json({ error: 'この部門名は既に他の部門で使われています' });
+    const sort_order = req.body.sort_order != null ? Number(req.body.sort_order) : existing.sort_order;
+    await db.run('UPDATE departments SET name=?, sort_order=? WHERE id=?', [name, sort_order, req.params.id]);
+    logOperation(req.body.operator, '部門更新', name, existing.name !== name ? `${existing.name}→${name}` : '');
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: friendlyDbError(e) }); }
+});
+
+// 部門削除(その部門を使っている商品が1件でもあれば削除不可)
+router.delete('/departments/:id', async (req, res) => {
+  try {
+    const existing = await db.get('SELECT * FROM departments WHERE id=?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: '部門が見つかりません' });
+    const inUse = await db.get('SELECT COUNT(*) c FROM products WHERE department_id=?', [req.params.id]);
+    if (Number(inUse.c) > 0) {
+      return res.status(400).json({ error: `この部門は${inUse.c}件の商品で使われているため削除できません。先に該当商品の部門を変更してください。` });
+    }
+    await db.run('DELETE FROM departments WHERE id=?', [req.params.id]);
+    logOperation(req.query.operator, '部門削除', existing.name, '');
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // 商品検索一覧
 router.get('/products', async (req, res) => {
   try {

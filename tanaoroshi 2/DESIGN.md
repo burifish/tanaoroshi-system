@@ -208,6 +208,9 @@ sequenceDiagram
 | メソッド | パス | 概要 |
 |---|---|---|
 | GET | /api/departments | 部門一覧 |
+| POST | /api/departments | 部門新規登録 |
+| PUT | /api/departments/:id | 部門名・並び順の変更 |
+| DELETE | /api/departments/:id | 部門削除(使用中の商品が1件でもあれば不可) |
 | GET | /api/products?q=&department_id= | 商品検索 |
 | GET | /api/products/lookup?jan=&session_id= | バーコードで商品検索+現在の棚卸状況 |
 | POST | /api/products | 商品新規登録 |

@@ -615,7 +615,10 @@ async function screenMasterForm(id) {
       <div class="field"><label>JANコード*</label><input id="f_jan" value="${escapeHtml(p.jan_code || '')}"></div>
       <div class="field"><label>商品名*</label><input id="f_name" value="${escapeHtml(p.name)}"></div>
       <div class="field"><label>部門</label>
-        <select id="f_dept">${depts.map(d => `<option value="${d.id}" ${d.id === p.department_id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select>
+        <div class="row2" style="align-items:center;">
+          <select id="f_dept">${depts.map(d => `<option value="${d.id}" ${d.id === p.department_id ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select>
+          <button type="button" class="btn btn-outline btn-sm" id="addDeptBtn">＋ 新しい部門を追加</button>
+        </div>
       </div>
       <div class="row2">
         <div class="field"><label>仕入単価</label><input id="f_cost" type="number" min="0" value="${p.cost_price}"></div>
@@ -659,6 +662,20 @@ async function screenMasterForm(id) {
       location.hash = '#/master';
     };
   }
+  document.getElementById('addDeptBtn').onclick = async () => {
+    const name = prompt('新しい部門名を入力してください');
+    if (!name || !name.trim()) return;
+    try {
+      const dept = await api('/departments', { method: 'POST', body: { name: name.trim(), operator: getOperator() } });
+      const sel = document.getElementById('f_dept');
+      const opt = document.createElement('option');
+      opt.value = dept.id;
+      opt.textContent = dept.name;
+      sel.appendChild(opt);
+      sel.value = dept.id;
+      showToast('部門を追加しました');
+    } catch (e) { alert(e.message); }
+  };
 }
 
 async function screenMasterImport() {
@@ -710,6 +727,18 @@ async function screenSettings() {
     </div>
 
     <div class="card">
+      <h2>部門の管理</h2>
+      <div class="field">
+        <label>新しい部門を追加</label>
+        <div class="row2">
+          <input id="newDeptName" placeholder="例: 精肉部">
+          <button class="btn btn-outline" id="addDeptBtn">追加</button>
+        </div>
+      </div>
+      <div id="deptList"><div class="empty">読み込み中...</div></div>
+    </div>
+
+    <div class="card">
       <h2>重複読取時の処理（既定）</h2>
       <div class="field">
         <select id="dupMode">
@@ -758,7 +787,54 @@ async function screenSettings() {
   document.getElementById('logs').innerHTML = logs.length ? logs.slice(0, 30).map(l => `
     <div class="meta" style="padding:4px 0;border-bottom:1px solid var(--border);">${escapeHtml(l.created_at)} ${escapeHtml(l.user || '')} - ${escapeHtml(l.action)} ${escapeHtml(l.target || '')} ${escapeHtml(l.detail || '')}</div>
   `).join('') : `<div class="empty">履歴なし</div>`;
+
+  document.getElementById('addDeptBtn').onclick = async () => {
+    const nameEl = document.getElementById('newDeptName');
+    const name = nameEl.value.trim();
+    if (!name) { showToast('部門名を入力してください'); return; }
+    try {
+      await api('/departments', { method: 'POST', body: { name, operator: getOperator() } });
+      nameEl.value = '';
+      showToast('部門を追加しました');
+      loadDepartmentList();
+    } catch (e) { alert(e.message); }
+  };
+  loadDepartmentList();
 }
+
+async function loadDepartmentList() {
+  const el = document.getElementById('deptList');
+  if (!el) return;
+  const depts = await api('/departments');
+  if (depts.length === 0) { el.innerHTML = `<div class="empty">部門がありません</div>`; return; }
+  el.innerHTML = depts.map(d => `
+    <div class="list-item">
+      <div class="top"><span class="name">${escapeHtml(d.name)}</span></div>
+      <div class="btn-group" style="margin-top:6px;">
+        <button class="btn btn-outline btn-sm" onclick="renameDepartment(${d.id}, '${escapeHtml(d.name).replace(/'/g, "\\'")}')">名前を変更</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteDepartment(${d.id}, '${escapeHtml(d.name).replace(/'/g, "\\'")}')">削除</button>
+      </div>
+    </div>
+  `).join('');
+}
+window.renameDepartment = async (id, currentName) => {
+  const name = prompt('新しい部門名を入力してください', currentName);
+  if (name === null) return;
+  if (!name.trim()) { alert('部門名を入力してください'); return; }
+  try {
+    await api(`/departments/${id}`, { method: 'PUT', body: { name: name.trim(), operator: getOperator() } });
+    showToast('部門名を変更しました');
+    loadDepartmentList();
+  } catch (e) { alert(e.message); }
+};
+window.deleteDepartment = async (id, name) => {
+  if (!confirm(`部門「${name}」を削除しますか？`)) return;
+  try {
+    await api(`/departments/${id}?operator=${encodeURIComponent(getOperator())}`, { method: 'DELETE' });
+    showToast('部門を削除しました');
+    loadDepartmentList();
+  } catch (e) { alert(e.message); }
+};
 
 // ============================================================
 // ダッシュボード
